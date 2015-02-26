@@ -2,18 +2,14 @@
 #
 # Desafio: Sincronização de dados Cassandra-Elasticsearch
 # Author: Sergio Berlotto <sergio.berlotto@gmail.com>
+# git: https://github.com/berlotto/desafio
 #
 
 import os
 import sys
-import data_config as data
 from time import sleep
 
-PERIODICIDADE = 1  # Em minutos
-CASSANDRA_CONNECTION = ""
-CASSANDRA_DB = ""
-ELASTIC_CONNECTION = ""
-ELASTIC_DB_NAME = "desafio"
+from config import * 
 
 from cassandra.cluster import Cluster
 from elasticsearch import Elasticsearch
@@ -29,16 +25,16 @@ class ElasticBase(object):
         self.es = Elasticsearch()
         #Create the database
         self.es.indices.create(index=ELASTIC_DB_NAME, ignore=400)
-        return es
+        return self.es
 
     def new_data(self):
         #verifica registos maiores que LAST_ID
+        print "E.new_data"
         novos = None
-        for dado in data.elasticsearch:
-            res = self.es.search(
-                index=ELASTIC_DB_NAME,
-                doc_type=dado['table_name'],
-                body={
+        for dado in SYNCDATA:
+            print "Verificando E %s" % dado['table_name']
+            if self.last_id:
+                body = {
                     'query': {
                         'filtered': {
                             'filter': {
@@ -49,9 +45,19 @@ class ElasticBase(object):
                         }
                     }
                 }
+            else:
+                body = None
+            res = self.es.search(
+                index=ELASTIC_DB_NAME,
+                doc_type=dado['table_name'],
+                body=body
             )
+            print "Retorno E", novos
             novos = res['hits']['hits']
-        return novos
+            for novo in novos:
+                print "Retornando E", novo
+                self.last_id = novo['_source']['id']
+                yield (tabela, novo['_source'])
 
     def exist_than_update(self, tabela, registro):
         #Se existe o registro no elasticsearch, entao
@@ -90,7 +96,7 @@ class CassandraBase(object):
 
     def __init__(self):
         self.session = self.connect()
-        self.last_id = 0
+        self.last_id = None
 
     def connect(self):
         cluster = Cluster()
@@ -99,17 +105,28 @@ class CassandraBase(object):
 
     def new_data(self):
         # Coomo gerador, retorna cada registro e sua tabela
+        print "C.new_Data"
         s = self.session
-        for tabela in data.cassandra:
+        for tabela in SYNCDATA:
             print "Verificando %s" % tabela['table_name']
-            novos = s.execute(
-                'SELECT * FROM %s where %s > %s' % (
-                    tabela['table_name'],
-                    tabela['id_field'],
-                    self.last_id
+            if self.last_id:
+                novos = s.execute(
+                    'SELECT * FROM %s where %s > %s' % (
+                        tabela['table_name'],
+                        tabela['id_field'],
+                        self.last_id
+                    )
                 )
-            )
+            else:
+                novos = s.execute(
+                    'SELECT * FROM %s ' % (
+                        tabela['table_name']
+                    )
+                )
+            print "Retornando registros..."
             for novo in novos:
+                print "novo"
+                self.last_id = novo['id']
                 yield (tabela, novo)
 
     def exist_than_update(self, tabela, registro):
@@ -125,6 +142,20 @@ class CassandraBase(object):
         )
         if one:
             # Update
+            SQL = "UPDATE %s SET " % tabela['table_name']
+
+            for key in registro.keys():
+                if type(registro[key] == int):
+                    SQL += "%s = %s, " % (key, registro['key'])
+                else:
+                    SQL += "%s = '%s', " % (key, registro['key'])
+
+            SQL += "WHERE  %s = %s" % (
+                tabela['id_field'],
+                registro[tabela['id_field']]
+            )
+
+            session.execute(SQL)
             return True
         else:
             return False
@@ -176,12 +207,15 @@ def syncronize():
     while True:
 
         for data in c.new_data():
+            print "Redcebido C", data
             e.syncronize_new_data(data)
 
         for data in e.new_data():
+            print "Recebido E", data
             c.syncronize_new_data(data)
 
-        sleep(PERIODICIDADE * 60)
+        print "Waiting..."
+        sleep(FREQUENCY * 60)
 
 
 if __name__ == '__main__':
