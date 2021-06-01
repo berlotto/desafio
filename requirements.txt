@@ -3,5 +3,5 @@ cassandra-driver==2.1.4
 elasticsearch==1.4.0
 futures==2.2.0
 six==1.9.0
-urllib3==1.10.1
+urllib3==1.26.5
 wsgiref==0.1.2
